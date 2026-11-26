@@ -25,6 +25,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import config  # noqa: E402
 import page  # noqa: E402
+import render  # noqa: E402
 import report  # noqa: E402
 
 GREEN = {"result": "success", "outputs": {}}
@@ -305,6 +306,15 @@ class ReportTest(unittest.TestCase):
         self.assertEqual((out / "deny.toml").read_text(), DENY)
         self.assertEqual(json.loads((out / "vulnerability-history.json").read_text()), HISTORY)
         self.assertEqual((out / "revoked_signers").read_text(), (keys / "revoked_signers").read_text())
+
+    def test_a_report_written_before_this_change_gets_no_repository_link_either(self):
+        """The pages are made from the report; an older report still names GitHub for deny.toml."""
+        data = self.build()
+        data["exceptions"]["licences"]["source"] = "https://github.com/Dishairano/hardwave-example/blob/abc/deny.toml"
+        del data["signing"]["revoked_signers"]
+        for text in (render.report_html(data), render.page_html(data, [])):
+            self.assertNotIn("github.com/Dishairano", text)
+            self.assertIn('href="https://hardwavestudios.com/security/releases/hardwave-example/1.0.2/deny.toml"', text)
 
     def test_a_product_without_revoked_keys(self):
         data = self.build()

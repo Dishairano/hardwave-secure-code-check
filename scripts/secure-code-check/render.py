@@ -320,7 +320,7 @@ def results(report: dict, public: bool) -> str:
       <tbody>{''.join(rows)}</tbody>
     </table></div>
     <h3>Recorded exceptions</h3>
-    <p class="lead">An exception is allowed only with a written reason, and is looked at again whenever the dependency that brings it in updates. "Recorded" is the day it was added to <a href="{escape(licences['source'])}"><span class="mono">deny.toml</span></a>.</p>
+    <p class="lead">An exception is allowed only with a written reason, and is looked at again whenever the dependency that brings it in updates. "Recorded" is the day it was added to {own_link(report, 'deny.toml', 'deny.toml')}.</p>
     <div class="tbl"><table>
       <thead><tr><th>Advisory</th><th>Why it cannot be reached</th><th>Recorded</th></tr></thead>
       <tbody>{exc_rows or '<tr><td colspan="3">None</td></tr>'}</tbody>
