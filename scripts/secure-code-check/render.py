@@ -204,8 +204,26 @@ def base_name(report: dict) -> str:
     return f"{report['product']['id']}-{tail}-secure-code-check"
 
 
-def repo_url(report: dict) -> str:
-    return f"https://github.com/{report['product']['repository']}"
+def files_url(report: dict, name: str) -> str | None:
+    """Where a release's own page folder serves a file, on our own domain.
+
+    The pages do not link the source repository: a product's repository may be
+    private, and a reader has to be able to follow every link. What a reader
+    needs from the repository (the public key, the keys we no longer use,
+    deny.toml and the vulnerability history) is published next to the report
+    instead (page.py). A preview has no public folder, so it has no link.
+    """
+    release = report.get("release")
+    if not release:
+        return None
+    return f"{SITE}/security/releases/{report['product']['id']}/{release['version']}/{name}"
+
+
+def own_link(report: dict, name: str, text: str) -> str:
+    """A link to our published copy of a file, or the name alone for a preview."""
+    url = files_url(report, name)
+    inner = f'<span class="mono">{escape(text)}</span>'
+    return f'<a href="{escape(url)}">{inner}</a>' if url else inner
 
 
 # -------------------------------------------------------------- sections
@@ -218,17 +236,14 @@ def hero(report: dict, eyebrow: str, badge: bool) -> str:
     facts = []
     if release:
         facts.append(("Released", f"{long_date(release.get('released_at'))}, {escape(product['platforms'])}"))
-        facts.append(("Source", f'<a href="{escape(repo_url(report))}">github.com/{escape(product["repository"])}</a>, '
-                                f'tag {escape(release["tag"])}'))
+        facts.append(("Source", f'{escape(product["repository"])}, tag {escape(release["tag"])}'))
     else:
-        facts.append(("Source", f'<a href="{escape(repo_url(report))}">github.com/{escape(product["repository"])}</a>, '
-                                f'{escape(src.get("ref", ""))}'))
-    facts.append(("Commit", f'<a class="mono" href="{escape(repo_url(report))}/commit/{escape(src["commit"])}">'
-                            f'{escape(src["commit"][:8])}</a>'))
+        facts.append(("Source", f'{escape(product["repository"])}, {escape(src.get("ref", ""))}'))
+    facts.append(("Commit", f'<span class="mono">{escape(src["commit"][:8])}</span>'))
     runner = "GitHub-hosted runners" if src.get("runner", "github-hosted") == "github-hosted" else "self-hosted runners"
     facts.append(("Checks ran", f"{date_time(report.get('scanned_at'))}, on {runner}"))
     if src.get("run_url"):
-        facts.append(("Workflow run", f'<a href="{escape(src["run_url"])}">{escape(src["run_url"].split("/")[-1])}</a>'))
+        facts.append(("Workflow run", f'<span class="mono">{escape(src["run_url"].split("/")[-1])}</span>'))
     fact_html = "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in facts)
     big = "All checks passed" if passed else f"{summary['passed']} of {summary['checks']} checks passed"
     when = short_date(release.get("released_at") if release else report.get("scanned_at"))
@@ -279,7 +294,7 @@ def results(report: dict, public: bool) -> str:
         for a in exc["advisories"])
     licences = exc["licences"]
     licence_line = (f'<p class="lead">Licence exceptions: {licences["count"]}, each with its reason in '
-                    f'<a href="{escape(licences["source"])}"><span class="mono">deny.toml</span></a>.</p>'
+                    f'{own_link(report, "deny.toml", "deny.toml")}.</p>'
                     if licences["count"] else "")
     not_checked = "".join(f"<li><b>{escape(CHECK_NAMES.get(n['check'], n['check'].replace('_', ' ')))}</b>: "
                           f"{escape(n['why'])}</li>"
@@ -338,8 +353,7 @@ def history_section(report: dict) -> str:
         aliases = ", ".join(a for a in e.get("aliases", []) if a.startswith("CVE-"))
         resolved = plain_date(e.get("resolved")) if e.get("resolved") else "not yet"
         if e.get("resolved_by"):
-            resolved += (f'<small class="mono"><a href="{escape(repo_url(report))}/commit/{escape(e["resolved_by"])}">'
-                         f'{escape(e["resolved_by"])}</a></small>')
+            resolved += f'<small class="mono">{escape(e["resolved_by"])}</small>'
         reason = f"<small>{escape(e['reason'])}</small>" if e.get("reason") else ""
         rows.append(
             f'<tr><td class="mono">{escape(e["id"])}<small>{escape(e["crate"])} {escape(", ".join(e["versions"]))}'
@@ -356,7 +370,7 @@ def history_section(report: dict) -> str:
     return f"""
   <section>
     <h2>Vulnerability history</h2>
-    <p class="lead">{escape(hist.get('about', ''))} Source: <a href="{escape(repo_url(report))}/blob/{escape(report['source']['commit'])}/security/vulnerability-history.json"><span class="mono">security/vulnerability-history.json</span></a>.</p>
+    <p class="lead">{escape(hist.get('about', ''))} Source: {own_link(report, "vulnerability-history.json", "security/vulnerability-history.json")}.</p>
     <div class="stats hstats">
       <div class="stat"><b>{s['total']}</b><span>advisories that reached a shipped build</span></div>
       <div class="stat"><b>{s['open']}</b><span>open now</span></div>
@@ -426,7 +440,7 @@ def files_table(report: dict) -> str:
     return f"""
   <section>
     <h2>Release files</h2>
-    <p class="lead">Every file on the GitHub release for {escape(tag)}, built by <span class="mono">.github/workflows/release.yml</span> from commit <span class="mono">{escape(report['source']['commit'][:8])}</span>. {escape(note)} The hashes are part of the signed report, so a file that matches is the one our build published. GitHub build attestations (SLSA provenance) are not part of this release yet; this page will say so when they are.</p>
+    <p class="lead">Every file of release {escape(tag)}, built by <span class="mono">.github/workflows/release.yml</span> from commit <span class="mono">{escape(report['source']['commit'][:8])}</span>. {escape(note)} The hashes are part of the signed report, so a file that matches is the one our build published. GitHub build attestations (SLSA provenance) are not part of this release yet; this page will say so when they are.</p>
     <div class="tbl"><table>
       <thead><tr>{head}</tr></thead>
       <tbody>{''.join(rows) or f'<tr><td colspan="{columns}">No files recorded</td></tr>'}</tbody>
@@ -459,19 +473,25 @@ def verify_commands(report: dict) -> str:
 <pre>Get-AuthenticodeSignature .\\{escape(first_exe)}</pre>
       </li>""" if first_exe else ""
     ident, ns = escape(signing["identity"]), escape(signing["namespace"])
+    # Keys we no longer sign with: a reader passes the list to ssh-keygen, so
+    # a report signed with one of them does not verify.
+    revoked = bool(signing.get("revoked_signers"))
+    revoked_get = (f" Download {own_link(report, 'revoked_signers', 'revoked_signers')} too: the keys we no longer sign with."
+                   if revoked else "")
+    r_sh, r_win = ("-r revoked_signers \\\n  ", " -r revoked_signers") if revoked else ("", "")
     return f"""
     <ol class="steps">
       <li><b>Get our public key</b>
-        <p>Download <a href="allowed_signers"><span class="mono">allowed_signers</span></a> here and compare it with the copy in the source repository: <a href="{escape(repo_url(report))}/blob/{escape(report['source']['commit'])}/security/secure-code-check/allowed_signers"><span class="mono">security/secure-code-check/allowed_signers</span></a>. Key fingerprint: <span class="mono">{escape(signing.get('fingerprint', ''))}</span>.</p>
+        <p>Download {own_link(report, 'allowed_signers', 'allowed_signers')} from this release's page on hardwavestudios.com. Its key must have the fingerprint <span class="mono">{escape(signing.get('fingerprint', ''))}</span>, the one <a href="{SITE}/security/releases">{SITE.split('//')[1]}/security/releases</a> names as our current key.{revoked_get}</p>
       </li>
       <li><b>Check the report is the one our build signed</b>
         <p>Needs only OpenSSH 8.1 or newer, which macOS, Linux and Windows 10 and 11 include. Use it on a copy that reached you by email too.</p>
 <pre>ssh-keygen -Y verify -f allowed_signers \\
   -I {ident} -n {ns} \\
-  -s {escape(base)}.json.sig &lt; {escape(base)}.json
+  {r_sh}-s {escape(base)}.json.sig &lt; {escape(base)}.json
 
 <span class="c"># Windows (Command Prompt keeps the bytes exactly as they are)</span>
-cmd /c "ssh-keygen -Y verify -f allowed_signers -I {ident} -n {ns} -s {escape(base)}.json.sig &lt; {escape(base)}.json"</pre>
+cmd /c "ssh-keygen -Y verify -f allowed_signers -I {ident} -n {ns}{r_win} -s {escape(base)}.json.sig &lt; {escape(base)}.json"</pre>
         <p>It prints <span class="mono">Good "{ns}" signature for {ident}</span>. The same works for the HTML report with its own <span class="mono">.html.sig</span>.</p>
       </li>
       <li><b>Compare a file's hash with the report</b>
@@ -535,7 +555,7 @@ def report_html(report: dict) -> str:
   {iso_table(report)}
   <section class="last">
     <h2>Signature</h2>
-    <p class="lead">{'This file and its JSON twin are signed by our build with an Ed25519 key that only the release workflow holds. The public key is in the source repository and on the public page.' if report.get('release') else 'Release reports are always signed by our build. A preview of a push or pull request is signed too when the run holds the key: look for the .sig file next to this one.'}</p>
+    <p class="lead">{'This file and its JSON twin are signed by our build with an Ed25519 key that only the release workflow holds. The public key is on the public page of the release, next to the keys we no longer sign with.' if report.get('release') else 'Release reports are always signed by our build. A preview of a push or pull request is signed too when the run holds the key: look for the .sig file next to this one.'}</p>
     <dl class="facts">
       <dt>Method</dt><dd>{escape(signing['method'])}</dd>
       <dt>Identity</dt><dd class="mono">{escape(signing['identity'])}</dd>

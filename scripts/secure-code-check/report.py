@@ -216,13 +216,16 @@ def sha256_of(path: pathlib.Path) -> str:
 
 
 def public_key(repo: pathlib.Path) -> dict:
-    path = repo / "security" / "secure-code-check" / "signing_key.pub"
+    keys = repo / "security" / "secure-code-check"
     try:
-        key_type, blob = path.read_text().split()[:2]
+        key_type, blob = (keys / "signing_key.pub").read_text().split()[:2]
     except (FileNotFoundError, ValueError):
         return {}
     fingerprint = base64.b64encode(hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
-    return {"public_key": f"{key_type} {blob}", "fingerprint": f"SHA256:{fingerprint}"}
+    # revoked_signers: the product has a list of keys it no longer signs
+    # with, published next to the report, for ssh-keygen -Y verify -r.
+    return {"public_key": f"{key_type} {blob}", "fingerprint": f"SHA256:{fingerprint}",
+            "revoked_signers": (keys / "revoked_signers").is_file()}
 
 
 def history(repo: pathlib.Path, today: dt.date) -> dict:
@@ -620,8 +623,11 @@ def build(args) -> dict:
         "not_checked": cfg["not_checked"],
         "exceptions": {
             "advisories": exc["advisories"],
+            # Our own published copy (page.py), not the repository: a reader
+            # has to be able to open it when the repository is private.
             "licences": {"count": exc["licences"]["count"],
-                         "source": f"https://github.com/{repository}/blob/{commit}/deny.toml"},
+                         "source": (f"{render.SITE}/security/releases/{product['id']}/{version}/deny.toml"
+                                    if release else "deny.toml")},
         },
         "sbom": sbom_out,
         "sbom_note": cfg["sbom_note"],

@@ -11,8 +11,10 @@ hashes, and that nothing claims a certificate or compliance.
 import hashlib
 import html
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,8 @@ import report  # noqa: E402
 
 GREEN = {"result": "success", "outputs": {}}
 PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIT+m3BVUiJBA9lAoQXXvrL2j8+jRmwIJqQPM+PHieeQ"
+# The key that leaked on 12 Nov 2026 and is revoked: what a revoked_signers line looks like.
+OLD_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBmE0/eGoq8vVqvuL1UL3OYJ4CYjRNj2Bl38+8ClQpi+"
 
 CONFIG = """
 [product]
@@ -277,6 +281,43 @@ class ReportTest(unittest.TestCase):
         self.assertIn('href="../1.0.3/"', text)
         self.assertTrue((out.parent / "index.html").exists())
 
+    def test_nothing_links_the_source_repository(self):
+        """A reader who cannot see the repository can still follow every link."""
+        keys = self.repo / "security" / "secure-code-check"
+        (keys / "revoked_signers").write_text("# keys we no longer sign with\n" + OLD_PUBLIC_KEY + "\n")
+        data = self.build()
+        base = self.out / "hardwave-example-1.0.2-secure-code-check"
+        for suffix in (".json.sig", ".html.sig"):
+            pathlib.Path(str(base) + suffix).write_text("sig")
+        self.assertEqual(page.main(["--report", str(base) + ".json", "--files", str(self.out),
+                                    "--repo", str(self.repo), "--site-dir", str(self.site)]), 0)
+        out = self.site / "security" / "releases" / "hardwave-example" / "1.0.2"
+        ours = "https://hardwavestudios.com/security/releases/hardwave-example/1.0.2/"
+        for text in (self.html(), (out / "index.html").read_text()):
+            self.assertNotIn('href="https://github.com', text)
+            self.assertNotIn("github.com/Dishairano", text)
+            for name in ("deny.toml", "vulnerability-history.json", "allowed_signers", "revoked_signers"):
+                self.assertIn(f'href="{ours}{name}"', text, name)
+            self.assertIn("-r revoked_signers", text)
+        self.assertEqual(data["exceptions"]["licences"]["source"], ours + "deny.toml")
+        self.assertTrue(data["signing"]["revoked_signers"])
+        # The copies are the product's own files at this release.
+        self.assertEqual((out / "deny.toml").read_text(), DENY)
+        self.assertEqual(json.loads((out / "vulnerability-history.json").read_text()), HISTORY)
+        self.assertEqual((out / "revoked_signers").read_text(), (keys / "revoked_signers").read_text())
+
+    def test_a_product_without_revoked_keys(self):
+        data = self.build()
+        base = self.out / "hardwave-example-1.0.2-secure-code-check"
+        for suffix in (".json.sig", ".html.sig"):
+            pathlib.Path(str(base) + suffix).write_text("sig")
+        self.assertEqual(page.main(["--report", str(base) + ".json", "--files", str(self.out),
+                                    "--repo", str(self.repo), "--site-dir", str(self.site)]), 0)
+        out = self.site / "security" / "releases" / "hardwave-example" / "1.0.2"
+        self.assertFalse(data["signing"]["revoked_signers"])
+        self.assertFalse((out / "revoked_signers").exists())
+        self.assertNotIn("revoked_signers", self.html())
+
     def test_vulnerability_history(self):
         hist = report.history(self.repo, report.dt.date(2026, 11, 9))
         s = hist["summary"]
@@ -310,6 +351,87 @@ class ReportTest(unittest.TestCase):
             text = text.replace("not a certificate", "")
             for word in ("certificate", "certified", "compliant", "compliance"):
                 self.assertIsNone(re.search(word, text, re.I), f"{path.name} says {word!r}")
+
+
+@unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("bash"), "needs ssh-keygen and bash")
+class SignTest(unittest.TestCase):
+    """sign.sh with throwaway keys made for the test."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.keys = self.root / "keys"
+        self.keys.mkdir()
+        self.current = self.new_key("current")
+        self.other = self.new_key("other")
+        self.use(self.current)
+        self.file = self.root / "report.json"
+        self.file.write_text("{}\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def new_key(self, name):
+        path = self.root / name
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", str(path)], check=True)
+        return path
+
+    @staticmethod
+    def public(key):
+        return " ".join(pathlib.Path(str(key) + ".pub").read_text().split()[:2])
+
+    def use(self, key):
+        (self.keys / "signing_key.pub").write_text(self.public(key) + " secure-code-check@hardwavestudios.com\n")
+        (self.keys / "allowed_signers").write_text(
+            'secure-code-check@hardwavestudios.com namespaces="hardwave-secure-code-check" ' + self.public(key) + "\n")
+
+    def sign(self, key, *args):
+        env = {"PATH": os.environ["PATH"], "SCC_KEYS_DIR": str(self.keys), "RUNNER_TEMP": str(self.root),
+               "SECURE_CODE_CHECK_SIGNING_KEY": key.read_text()}
+        return subprocess.run(["bash", str(HERE / "sign.sh"), *args], env=env, capture_output=True, text=True)
+
+    def verify(self, *extra):
+        with self.file.open("rb") as handle:
+            return subprocess.run(
+                ["ssh-keygen", "-Y", "verify", "-f", str(self.keys / "allowed_signers"),
+                 "-I", "secure-code-check@hardwavestudios.com", "-n", "hardwave-secure-code-check",
+                 *extra, "-s", str(self.file) + ".sig"], stdin=handle, capture_output=True, text=True)
+
+    def test_signs_without_a_revoked_list(self):
+        done = self.sign(self.current, "sign", str(self.file))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.verify().returncode, 0)
+
+    def test_signs_when_another_key_is_revoked(self):
+        (self.keys / "revoked_signers").write_text("# no longer used\n" + self.public(self.other) + "\n")
+        done = self.sign(self.current, "sign", str(self.file))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.verify("-r", str(self.keys / "revoked_signers")).returncode, 0)
+
+    def test_refuses_a_revoked_key(self):
+        (self.keys / "revoked_signers").write_text("# no longer used\n" + self.public(self.current) + "\n")
+        for command in (["check"], ["sign", str(self.file)]):
+            done = self.sign(self.current, *command)
+            self.assertEqual(done.returncode, 1, command)
+            self.assertIn("revoked_signers", done.stdout)
+        self.assertFalse(pathlib.Path(str(self.file) + ".sig").exists())
+
+    def test_a_reader_with_the_list_rejects_a_revoked_signature(self):
+        self.assertEqual(self.sign(self.current, "sign", str(self.file)).returncode, 0)
+        (self.keys / "revoked_signers").write_text(self.public(self.current) + "\n")
+        self.assertEqual(self.verify().returncode, 0)
+        self.assertNotEqual(self.verify("-r", str(self.keys / "revoked_signers")).returncode, 0)
+
+    def test_refuses_a_key_that_is_not_the_published_one(self):
+        done = self.sign(self.other, "check")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("does not match", done.stdout)
+
+    def test_the_key_is_never_printed_or_left_behind(self):
+        done = self.sign(self.current, "sign", str(self.file))
+        secret = self.current.read_text().splitlines()[1]
+        self.assertNotIn(secret, done.stdout + done.stderr)
+        self.assertEqual(list(self.root.glob("scc-key.*")), [])
 
 
 class ConfigTest(unittest.TestCase):

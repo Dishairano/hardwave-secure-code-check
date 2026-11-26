@@ -38,6 +38,15 @@ A calling repository with a restricted Actions allow list needs
 `Dishairano/hardwave-secure-code-check/.github/workflows/*` on it.
 
 Each product keeps its own `deny.toml`, `security/secure-code-check/config.toml` and its public signing keys
-(`signing_key.pub`, `allowed_signers`) in its own repository; this repository has no keys.
+(`signing_key.pub`, `allowed_signers`, and `revoked_signers` once a key has been replaced) in its own
+repository; this repository has no keys. `sign.sh` refuses to sign with a key listed in `revoked_signers`.
+
+## What the public page links
+
+The report and the page do not link the product's source repository, which may be private. What a reader
+needs from it is published next to the report, in the release's own folder on
+`hardwavestudios.com/security/releases/<product>/<version>/`: `allowed_signers`, `signing_key.pub`,
+`revoked_signers`, `deny.toml` and `vulnerability-history.json`, each as it is at that release. They are in
+the `<product>-<version>-security-page.tar.gz` the release carries.
 
 The report scripts' own tests: `python3 -m unittest discover -s scripts/secure-code-check -p 'test_*.py'`.

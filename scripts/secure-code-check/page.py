@@ -13,6 +13,10 @@ Writes, ready to publish as they are:
       badge.svg         "Secure Code Check | v<version> · <date>"
       <report>.html/.json and their .sig, the SBOM files
       allowed_signers, signing_key.pub
+      revoked_signers   the keys we no longer sign with, when the product has the file
+      deny.toml, vulnerability-history.json
+                        the product's own copies at this release, so the page
+                        links nothing in the source repository
   site/security/releases/<product>/index.html
       the product's releases with evidence, newest first
 
@@ -78,6 +82,15 @@ def main(argv=None) -> int:
     keys = pathlib.Path(args.repo) / "security" / "secure-code-check"
     for name in ("allowed_signers", "signing_key.pub"):
         shutil.copyfile(keys / name, out / name)
+    # What the page used to link in the source repository, as it is at this
+    # release. Published here so every link works for a reader who cannot see
+    # the repository. Each is optional in a product; a missing one is left out.
+    repo = pathlib.Path(args.repo)
+    for source, name in ((keys / "revoked_signers", "revoked_signers"),
+                         (repo / "deny.toml", "deny.toml"),
+                         (repo / "security" / "vulnerability-history.json", "vulnerability-history.json")):
+        if source.is_file():
+            shutil.copyfile(source, out / name)
 
     (out / "style.css").write_text(render.CSS.lstrip())
     (out / "index.html").write_text(render.page_html(report, history))
